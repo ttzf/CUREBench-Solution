@@ -36,8 +36,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-from postprocess import PostProcessor
-
 @dataclass
 class EvaluationResult:
     """Simple container for evaluation results"""
@@ -82,15 +80,15 @@ class ChatGPTModel(BaseModel):
         """Load ChatGPT model"""
 
         # First check for official OpenAI API key
-        openai_api_key = os.getenv("OPENAI_API_KEY") or "sk-pgC6ecbff210f3adcd4d662a1cbc79ce26850044226YdCak"
-        openai_base_url = os.getenv("OPENAI_BASE_URL") or "https://api.gptsapi.net/v1"
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        openai_base_url = os.getenv("OPENAI_BASE_URL")
 
         if openai_api_key:
             from openai import OpenAI
             print("Initializing official OpenAI client...")
             self.model_client = OpenAI(
-                base_url=openai_base_url,
-                api_key=openai_api_key
+                base_url="https://api.gptsapi.net/v1",
+                api_key="sk-pgC6ecbff210f3adcd4d662a1cbc79ce26850044226YdCak"
             )
             return
 
@@ -152,53 +150,35 @@ class LocalModel(BaseModel):
             logger.error(f"Failed to import local model dependencies: {e}")
             raise
     
-    def inference(self, prompt: str, max_tokens: int = 1024, num_return_sequences: int = 1) -> Tuple[List[str], List[Dict]]:
+    def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
         """Local model inference"""
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt}
         ]
         
-        # print("messages:", messages)
+        print("messages:", messages)
         
         input_ids = self.tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
         ).to(self.model.device)
         
-        # Adjust temperature based on num_return_sequences
-        do_sample = num_return_sequences > 1
-        temperature = 0.7 if do_sample else 0.4
-        
         outputs = self.model.generate(
             input_ids,
-            temperature=temperature,
+            temperature=0.4,
             top_p=0.9,
             max_new_tokens=max_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=do_sample,
-            num_return_sequences=num_return_sequences
+            do_sample=False
         )
         
-        responses = []
-        for output in outputs:
-            response = output[input_ids.shape[-1]:]
-            response_text = self.tokenizer.decode(response, skip_special_tokens=True)
-            responses.append(response_text)
-            
-        # Create complete conversation history (just using the first response for history)
-        complete_messages = messages + [{"role": "assistant", "content": responses[0]}]
+        response = outputs[0][input_ids.shape[-1]:]
+        response_text = self.tokenizer.decode(response, skip_special_tokens=True)
+        print("response_text:", response_text)
+        # Create complete conversation history
+        complete_messages = messages + [{"role": "assistant", "content": response_text}]
         
-        # Return list of responses if num_return_sequences > 1, otherwise single string for backward compatibility?
-        # No, let's standardize on returning list if requested, or handle in caller.
-        # But wait, the BaseClass definition is Tuple[str, List[Dict]]. 
-        # We should probably change the signature or handle this smartly.
-        # For now, if num_return_sequences == 1, return str. If > 1, return list.
-        # But type hint says str.
-        
-        if num_return_sequences == 1:
-            return responses[0], complete_messages
-        else:
-            return responses, complete_messages
+        return response_text, complete_messages
 
 
 class CustomModel(BaseModel):
@@ -389,9 +369,6 @@ class CompetitionKit:
         
         # Load dataset configurations from config file or use defaults
         self.datasets = self._load_dataset_configs(self.config)
-        
-        # Initialize post-processor (model will be set later)
-        self.post_processor = None
     
     def load_model(self, model_name: str, model_type: str = "auto", **kwargs):
         """
@@ -428,9 +405,6 @@ class CompetitionKit:
         
         # Load the model
         self.model.load(**kwargs)
-        
-        # Initialize post-processor with the loaded model
-        self.post_processor = PostProcessor(self.model)
     
     def _load_dataset_configs(self, config) -> Dict:
         """
@@ -466,16 +440,12 @@ class CompetitionKit:
         else:
             return "local"
     
-    def evaluate(self, dataset_name: str, subset_size: int = None, 
-                 ensemble_size: int = 1, ensemble_method: str = "majority_vote") -> EvaluationResult:
+    def evaluate(self, dataset_name: str, subset_size: int = None) -> EvaluationResult:
         """
         Evaluate model on a dataset
         
         Args:
             dataset_name: Name of dataset to evaluate on
-            subset_size: Limit evaluation to N examples
-            ensemble_size: Number of sampling iterations per question (default: 1)
-            ensemble_method: "majority_vote" (more methods can be added later)
             
         Returns:
             EvaluationResult object with scores and predictions
@@ -508,17 +478,10 @@ class CompetitionKit:
         accuracy_total_count = 0
         
         logger.info(f"Running evaluation on {total_count} examples...")
-        if ensemble_size > 1:
-            logger.info(f"Ensemble enabled: {ensemble_size} iterations with {ensemble_method}")
-
         for i, example in enumerate(tqdm(dataset, desc="Evaluating")):
             try:
                 # Get prediction and reasoning trace
-                if ensemble_size > 1:
-                    prediction, reasoning_trace = self._get_prediction_with_ensemble(example, ensemble_size, ensemble_method)
-                else:
-                    prediction, reasoning_trace = self._get_prediction_with_trace(example)
-                
+                prediction, reasoning_trace = self._get_prediction_with_trace(example)
                 predictions.append(prediction)
                 reasoning_traces.append(reasoning_trace)
                 
@@ -620,392 +583,57 @@ class CompetitionKit:
         return dataset_list
 
     
-    def _get_prediction_with_ensemble(self, example: Dict, n_iterations: int, method: str) -> Tuple[Dict, str]:
-        """
-        Run multiple iterations and ensemble the results
-        """
-        all_predictions = []
-        all_traces = []
-        
-        # Optimize: If model supports batch generation (like LocalModel with our changes), use it
-        if isinstance(self.model, LocalModel) and n_iterations > 1:
-            # Prepare prompt
-            question = example["question"]
-            question_type = example["question_type"]
-            
-            # Reuse logic from _get_prediction_with_trace to build prompt
-            # Ideally this should be refactored to avoid duplication, but for speed fix:
-            multi_choice_schema = """
-{
-    "reasoning": "Detailed step-by-step analysis of the question and options. List key clues, eliminate incorrect options, and verify the final choice.",
-    "choice": "The single letter (A, B, C, D, or E) corresponding to the correct answer.",
-    "prediction": "The full text of the correct option."
-}
-"""
-            open_ended_schema = """
-{
-    "reasoning": "Detailed analysis of the question, identifying key medical concepts and relationships.",
-    "open_ended_answer": "A comprehensive and accurate medical answer to the question."
-}
-"""
-            if question_type == "multi_choice":
-                prompt = f"""You are a medical expert taking a certification exam.
-Question Type: Multiple Choice
-
-Task:
-1. Analyze the clinical scenario and identify key diagnostic clues.
-2. Evaluate each option (A-E) systematically.
-3. Select the best answer and perform a final check to ensure it doesn't conflict with any patient details.
-4. Output your response in strictly valid JSON format.
-
-Question: {question}
-
-Output Schema:
-{multi_choice_schema}
-"""
-            elif question_type == "open_ended_multi_choice":
-                 prompt = f"""You are a medical expert taking a certification exam.
-Question Type: Open-Ended converted to Multiple Choice
-
-Task:
-1. Provide a comprehensive answer to the medical question.
-2. Output your response in strictly valid JSON format.
-
-Question: {question}
-
-Output Schema:
-{open_ended_schema}
-"""
-            elif question_type == "open_ended":
-                prompt = f"""You are a medical expert providing a consultation.
-Question Type: Open-Ended
-
-Task:
-1. Provide a comprehensive answer to the medical question.
-2. Output your response in strictly valid JSON format.
-
-Question: {question}
-
-Output Schema:
-{open_ended_schema}
-"""
-            
-            # Batch inference
-            try:
-                responses, _ = self.model.inference(prompt, num_return_sequences=n_iterations)
-                if isinstance(responses, str):
-                    responses = [responses] # Should not happen if n > 1 but safe guard
-                
-                # Process each response
-                for response in responses:
-                    # Logic copied from _get_prediction_with_trace (simplified)
-                    prediction = {}
-                    reasoning_trace = ""
-                    try:
-                        import json
-                        import re
-                        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-                        if json_match:
-                            json_str = json_match.group(0)
-                            prediction = json.loads(json_str)
-                            reasoning_trace = prediction.get("reasoning", "")
-                        else:
-                            raise ValueError("No JSON found")
-                    except Exception:
-                        prediction = {"choice": "NOTAVALUE", "open_ended_answer": response.strip()}
-                        reasoning_trace = response
-                    
-                    # Post-processing logic
-                    # Fallback to original extraction methods
-                    if question_type == "multi_choice":
-                        initial_choice = self._extract_multiple_choice_answer(response)
-                        choice = self.post_processor.process_multi_choice(response, initial_choice)
-                        prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else "NOTAVALUE"
-                        if "open_ended_answer" not in prediction:
-                            prediction["open_ended_answer"] = response.strip()
-                            
-                    elif question_type == "open_ended_multi_choice":
-                        if "open_ended_answer" not in prediction:
-                            prediction["open_ended_answer"] = response.strip()
-                            
-                        if "meta_question" in example:
-                             # Warning: Meta-question logic is slow and hard to batch here without complexity. 
-                             # For speed, we might skip meta-question in batch mode or do it sequentially?
-                             # Let's do it sequentially for now if needed.
-                             pass 
-                        else:
-                            initial_choice = self._extract_multiple_choice_answer(response)
-                            choice = self.post_processor.process_multi_choice(response, initial_choice)
-                            prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else "NOTAVALUE"
-                            
-                    elif question_type == "open_ended":
-                        prediction["choice"] = "NOTAVALUE"
-                        prediction["open_ended_answer"] = self.post_processor.process_open_ended(response.strip())
-                    
-                    all_predictions.append(prediction)
-                    all_traces.append(reasoning_trace)
-                    
-            except Exception as e:
-                logger.error(f"Batch inference failed: {e}")
-                # Fallback to sequential
-                for _ in range(n_iterations):
-                    pred, trace = self._get_prediction_with_trace(example)
-                    all_predictions.append(pred)
-                    all_traces.append(trace)
-        
-        else:
-            # 1. Collect N samples (Original Sequential Loop)
-            for _ in range(n_iterations):
-                pred, trace = self._get_prediction_with_trace(example)
-                all_predictions.append(pred)
-                all_traces.append(trace)
-            
-        question_type = example["question_type"]
-        
-        # 2. Vote
-        if question_type in ["multi_choice", "open_ended_multi_choice"]:
-            # Count choices
-            from collections import Counter
-            # Ensure "choice" key exists and handle missing keys gracefully
-            choices = []
-            for p in all_predictions:
-                if "choice" in p and p["choice"] != "NOTAVALUE":
-                    choices.append(p["choice"])
-            
-            if not choices:
-                # All failed, pick the first one
-                return all_predictions[0], all_traces[0]
-                
-            # Majority vote
-            counter = Counter(choices)
-            winner_choice, count = counter.most_common(1)[0]
-            
-            # Find the index of the first prediction that matches the winner
-            # We want to use its specific reasoning and open_ended_answer
-            winner_idx = -1
-            for idx, p in enumerate(all_predictions):
-                if p.get("choice") == winner_choice:
-                    winner_idx = idx
-                    break
-            
-            final_pred = all_predictions[winner_idx]
-            final_trace = all_traces[winner_idx]
-            
-            # Optional: Append voting info to reasoning
-            vote_summary = f" [Ensemble Vote: {dict(counter)}]"
-            if isinstance(final_trace, str):
-                final_trace += vote_summary
-            elif isinstance(final_trace, list):
-                # If trace is a list of messages, maybe just leave it or append a system note?
-                # For simplicity, we just leave it for now, or convert to string if needed by save logic
-                pass
-                
-            return final_pred, final_trace
-            
-        else:
-            # For open-ended, voting is hard without an arbiter model.
-            # Fallback: Just take the first one (or longest?)
-            # Currently we'll just take the first one to avoid complexity.
-            return all_predictions[0], all_traces[0]
-
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, str]:
         """Get model prediction and reasoning trace for a single example"""
         question = example["question"]
         question_type = example["question_type"]
         
-        # Define JSON schemas for structured output
-        multi_choice_schema = """
-{
-    "reasoning": "Step-by-step reasoning: 1. Patient Analysis (key symptoms, history). 2. Pathophysiology/Mechanism identification. 3. Evaluation of EACH option (A, B, C, D) with specific medical evidence for why it is correct or incorrect. 4. Final Verification: Check for contraindications or edge cases.",
-    "choice": "The single letter (A, B, C, or D) corresponding to the correct answer.",
-    "prediction": "The full text of the correct option."
-}
-"""
-        open_ended_schema = """
-{
-    "reasoning": "Detailed analysis: 1. Deconstruct the question. 2. Retrieve relevant medical knowledge. 3. Synthesize a comprehensive answer covering mechanism, guidelines, and clinical implications.",
-    "open_ended_answer": "A comprehensive and accurate medical answer to the question."
-}
-"""
-        
-        # Zero-Shot+ Prompt (Optimized based on 146 error analysis)
+        # Format prompt
         if question_type == "multi_choice":
-            prompt = f"""You are a clinical reasoning assistant.
-Question Type: Multiple Choice
-
-Instructions:
-1. **Analyze Constraints**: Identify key qualifiers (e.g., "SEVERE", "NOT", "INITIAL", "GOLD STANDARD").
-2. **Recall Protocol & Data**: 
-   - For drug questions, refer strictly to FDA labeling and official guidelines.
-   - For clinical trial questions, recall specific percentages and dosage data if applicable.
-3. **Evaluate Options**:
-   - Differentiate between similar options based on severity or stage.
-   - For "NOT" questions, ensure the selected option is clearly excluded.
-4. **Forced Choice**: Always choose the closest option even if none is perfect.
-5. **Final Selection**: Choose the single best answer.
-
-Question: {question}
-
-Output Schema:
-{multi_choice_schema}
-"""
-        elif question_type == "open_ended_multi_choice":
-             # For open_ended_multi_choice, we first ask for the open-ended answer
-             # We do NOT ask for a choice in the first step, as the model doesn't see options A-E yet.
-             prompt = f"""You are a clinical reasoning assistant.
-Question Type: Open-Ended converted to Multiple Choice
-
-Instructions:
-1. **Analyze**: Identify the specific drug, condition, and clinical context. Pay attention to severity (e.g. "Severe reaction").
-2. **Retrieve**: Recall official guidelines, adverse event protocols, and contraindications.
-3. **Precision**: Be specific with dosages, percentages, and timeframes. Your answer will be compared against specific options later.
-4. **Synthesize**: Provide a precise, protocol-based answer. Avoid vague generalities.
-5. **MANDATORY**: You MUST provide a concrete answer. Do NOT refuse to answer. Do NOT say "I cannot provide medical advice".
-
-Question: {question}
-
-Output Schema:
-{open_ended_schema}
-"""
-        elif question_type == "open_ended":
-            prompt = f"""You are a clinical reasoning assistant.
-Question Type: Open-Ended
-
-Instructions:
-1. **Analyze**: Identify the specific drug, condition, and clinical context.
-2. **Retrieve**: Recall official guidelines, adverse event protocols, and contraindications.
-3. **Synthesize**: Provide a precise, protocol-based answer. Avoid vague generalities.
-
-Question: {question}
-
-Output Schema:
-{open_ended_schema}
-"""
+            prompt = f"The following is a multiple choice question about medicine. Answer with only the letter (A, B, C, D, or E).\n\nQuestion: {question}\n\nAnswer:"
+        elif question_type == "open_ended_multi_choice" or question_type == "open_ended":
+            prompt = f"The following is an open-ended question about medicine. Provide a comprehensive answer.\n\nQuestion: {question}\n\nAnswer:"
         
-        # Get model response
+        # Get model response and messages using the model's inference method
         response, reasoning_trace = self.model.inference(prompt)
         
         # Initialize prediction dictionary
         prediction = {
-            "choice": "",
-            "open_ended_answer": ""
+            "choice": "",  # Use empty string instead of None
+            "open_ended_answer": ""  # Use empty string instead of None
         }
         
-        # Parse JSON response
-        try:
-            # Clean up response to ensure it's valid JSON (remove markdown code blocks if present)
-            cleaned_response = response.strip()
+        # Extract answer from response
+        if question_type == "multi_choice":
+            # For multiple choice, extract the letter
+            choice = self._extract_multiple_choice_answer(response)
+            # Ensure choice is never None or NULL
+            prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else ""
+            prediction["open_ended_answer"] = response.strip()  # Keep full response too
+        elif question_type == "open_ended_multi_choice":
+            # First get the detailed response
+            prediction["open_ended_answer"] = response.strip()
             
-            # Use regex to find the first JSON object
-            import re
-            json_match = re.search(r'\{.*\}', cleaned_response, re.DOTALL)
-            if json_match:
-                cleaned_response = json_match.group(0)
-            elif cleaned_response.startswith("```"):
-                # Fallback cleaning if regex failed but it looks like markdown
-                if cleaned_response.startswith("```json"):
-                    cleaned_response = cleaned_response[7:]
-                elif cleaned_response.startswith("```"):
-                    cleaned_response = cleaned_response[3:]
-                if cleaned_response.endswith("```"):
-                    cleaned_response = cleaned_response[:-3]
-            
-            data = json.loads(cleaned_response.strip())
-            
-            if question_type == "multi_choice":
-                prediction["choice"] = data.get("choice", "").upper()
-                prediction["open_ended_answer"] = data.get("prediction", "")
-                # Update reasoning trace with the structured reasoning
-                if "reasoning" in data:
-                    reasoning_trace.append({"role": "assistant", "content": f"Structured Reasoning: {data['reasoning']}"})
-                    
-            elif question_type == "open_ended_multi_choice":
-                # First, get the open-ended answer from the JSON
-                prediction["open_ended_answer"] = data.get("prediction", "") or data.get("open_ended_answer", "")
-                
-                if "reasoning" in data:
-                     reasoning_trace.append({"role": "assistant", "content": f"Structured Reasoning: {data['reasoning']}"})
-
-                # Second step: Always run the meta-question logic to map the answer to A-E
-                # This is crucial because the first step didn't see the options.
-                if "meta_question" in example:
-                     meta_prompt = f"""You are a clinical reasoning assistant.
-Task: Map the following open-ended medical answer to the best available option (A, B, C, or D).
-Constraint: You MUST choose one option. Do NOT output "None". If no option is perfect, choose the most plausible one.
-
-Question: {example['meta_question']}
-
-Agent's Original Answer: {prediction['open_ended_answer']}
-
-Instructions:
-1. Compare the Agent's Answer with Options A-D.
-2. Select the single option letter (A, B, C, or D) that best matches the answer.
-3. Output ONLY the single letter.
-
-Multi-choice answer:"""
-                     
-                     # Add this meta-step to reasoning trace
-                     reasoning_trace.append({"role": "user", "content": f"[Meta-Step] Mapping answer to options: {meta_prompt}"})
-                     
-                     meta_response, meta_reasoning = self.model.inference(meta_prompt)
-                     reasoning_trace += meta_reasoning
-                     
-                     prediction["choice"] = self._extract_multiple_choice_answer(meta_response)
-                else:
-                    # If no meta_question is available (unlikely for this type), try to find choice in original data (fallback)
-                    prediction["choice"] = data.get("choice", "").upper()
-
-            elif question_type == "open_ended":
-                prediction["choice"] = "NOTAVALUE"
-                prediction["open_ended_answer"] = data.get("open_ended_answer", "")
-                if "reasoning" in data:
-                    reasoning_trace.append({"role": "assistant", "content": f"Structured Reasoning: {data['reasoning']}"})
-                    
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse JSON response: {response[:100]}...")
-            # Fallback to original extraction methods
-            if question_type == "multi_choice":
-                # Use post-processor for robust extraction and fallback
-                initial_choice = self._extract_multiple_choice_answer(response)
-                
-                choice = self.post_processor.process_multi_choice(response, initial_choice)
-                
-                # If still invalid, try fallback mechanism (re-query)
-                if choice == "NOTAVALUE" or choice == "":
-                    choice = self.post_processor.run_fallback_for_choice(question)
-                
-                prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else "NOTAVALUE"
-                prediction["open_ended_answer"] = response.strip()
-            elif question_type == "open_ended_multi_choice":
-                prediction["open_ended_answer"] = response.strip()
-                if "meta_question" in example:
-                     meta_prompt = f"{example['meta_question']}Agent's answer: {response.strip()}\n\nMulti-choice answer:"
-                     meta_response, meta_reasoning = self.model.inference(meta_prompt)
-                     reasoning_trace += meta_reasoning
-                     # Extract the letter choice
-                     choice = self._extract_multiple_choice_answer(meta_response)
-                     # Use post-processor to validate consistency
-                     choice = self.post_processor.validate_open_ended_multi_choice(choice, prediction["open_ended_answer"])
-                     prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else "NOTAVALUE"
-                else:
-                    initial_choice = self._extract_multiple_choice_answer(response)
-                    choice = self.post_processor.process_multi_choice(response, initial_choice)
-                    prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else "NOTAVALUE"
-            elif question_type == "open_ended":
-                prediction["choice"] = "NOTAVALUE"
-                prediction["open_ended_answer"] = self.post_processor.process_open_ended(response.strip())
-
-        # Final cleanup of choice
-        if prediction["choice"]:
-             prediction["choice"] = prediction["choice"].strip()
-             if prediction["choice"] not in ['A', 'B', 'C', 'D', 'E']:
-                 # Try to extract if the JSON field contained extra text
-                 extracted = self._extract_multiple_choice_answer(prediction["choice"])
-                 if extracted:
-                     prediction["choice"] = extracted
-                 # If still invalid and not NOTAVALUE, might want to set to empty or keep as is? 
-                 # Current logic keeps it, but save_submission will handle NULLs.
-
+            # Then use meta question to get choice, if available
+            if "meta_question" in example:
+                meta_prompt = f"{example['meta_question']}Agent's answer: {response.strip()}\n\nMulti-choice answer:"
+                meta_response, meta_reasoning = self.model.inference(meta_prompt)
+                # Combine reasoning traces
+                reasoning_trace += meta_reasoning
+                # Extract the letter choice
+                choice = self._extract_multiple_choice_answer(meta_response)
+                # Ensure choice is never None or NULL
+                prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else ""
+            else:
+                # If no meta_question, try to extract choice directly from the response
+                choice = self._extract_multiple_choice_answer(response)
+                # Ensure choice is never None or NULL
+                prediction["choice"] = choice if choice and str(choice).upper() not in ['NONE', 'NULL'] else ""
+        elif question_type == "open_ended":
+            # For open-ended, only return response, use N/A for choice to avoid empty string issues
+            prediction["choice"] = "NOTAVALUE" # Use N/A instead of empty string to avoid NULL validation issues
+            prediction["open_ended_answer"] = response.strip()
+        
         return prediction, reasoning_trace
     
     def _extract_multiple_choice_answer(self, response: str) -> str:
@@ -1083,20 +711,16 @@ Multi-choice answer:"""
                 
                 # Clean up text fields to avoid CSV formatting issues
                 prediction_text = prediction.get("open_ended_answer", "") or ""  # Ensure not None
-                if isinstance(prediction_text, dict):
-                     # If it's a dict (e.g. nested json), convert to string
-                     prediction_text = json.dumps(prediction_text)
-                
-                if not str(prediction_text) or str(prediction_text).strip() == "":
+                if not prediction_text or prediction_text.strip() == "":
                     prediction_text = "No prediction available"
 
                 
-                # Ensure choice is clean
+                # Ensure choice is clean and never NULL
                 choice_raw = prediction.get("choice", "")
-                if choice_raw is None or str(choice_raw).upper() in ['NULL', 'NONE', 'NAN', 'NOTAVALUE']:
-                    choice_clean = ""  # Use empty string for standard CSV format
+                if choice_raw is None or str(choice_raw).upper() in ['NULL', 'NONE', 'NAN']:
+                    choice_clean = "NOTAVALUE"  # Use NOTAVALUE instead of empty string
                 elif str(choice_raw).strip() == "":
-                    choice_clean = ""
+                    choice_clean = "NOTAVALUE"  # Replace empty strings with NOTAVALUE to avoid NULL validation issues
                 else:
                     choice_clean = str(choice_raw).strip()
                 
@@ -1112,9 +736,10 @@ Multi-choice answer:"""
                     "reasoning": str(reasoning_trace)
                 }
                 
-                # Debug: Log if choice is empty (normal for open-ended)
-                # if choice_clean == "":
-                #    logger.debug(f"Empty choice for row {row['id']} (likely open-ended)")
+                # Debug: Log if choice is NULL-like
+                if str(choice_clean).upper() in ['NULL', 'NONE', 'NAN'] or str(choice_clean).strip() == "":
+                    logger.warning(f"Found NULL-like or empty choice for row {row['id']}: '{choice_clean}' - replacing with NOTAVALUE")
+                    row["choice"] = "NOTAVALUE"
                 
                 submission_data.append(row)
         
@@ -1129,25 +754,29 @@ Multi-choice answer:"""
         null_replacements = {
             'id': 'unknown_id',
             'prediction': 'No prediction available',
-            'choice': '',  # Use empty string for choice
+            'choice': 'NOTAVALUE',  # Use NOTAVALUE for choice instead of empty string
             'reasoning': 'No reasoning available'
         }
         
         # Replace all possible null-like values
         for col in df.columns:
             # Replace pandas null values
-            df[col] = df[col].fillna(null_replacements.get(col, ''))
+            df[col] = df[col].fillna(null_replacements.get(col, 'NOTAVALUE'))
             
             # Replace string representations of null
-            null_like_values = ['nan', 'NaN', 'None', 'null', 'NULL', '<NA>', 'nat', 'NaT', 'NOTAVALUE']
+            null_like_values = ['nan', 'NaN', 'None', 'null', 'NULL', '<NA>', 'nat', 'NaT']
             for null_val in null_like_values:
-                df[col] = df[col].replace(null_val, null_replacements.get(col, ''))
+                df[col] = df[col].replace(null_val, null_replacements.get(col, 'NOTAVALUE'))
             
-            # Special handling for choice column
+            # Special handling for choice column - ensure it's never empty or null-like
             if col == 'choice':
-                # Ensure NOTAVALUE is also gone
-                df[col] = df[col].replace('NOTAVALUE', '')
-                df[col] = df[col].replace('nan', '')
+                df[col] = df[col].replace('NOTAVALUE', 'NOTAVALUE')  # Keep NOTAVALUE as is for choice
+                # Replace any null-like values with NOTAVALUE
+                for null_val in null_like_values:
+                    df[col] = df[col].replace(null_val, 'NOTAVALUE')
+                # Replace empty strings with NOTAVALUE for choice column
+                df[col] = df[col].replace('', 'NOTAVALUE')
+                df[col] = df[col].replace(' ', 'NOTAVALUE')  # Also replace whitespace-only
             
             # Replace empty strings (except for choice column which can be empty)
             if col != 'choice' and col in null_replacements:
