@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "model_name": "gpt-4o-mini",
+    "model_type": "chatgpt",
+    "track": "internal_reasoning",
+    "base_model_type": "API",
+    "base_model_name": "gpt-4o-mini",
+    "dataset": "cure_bench_pharse_1",
+    "additional_info": "Phase 1 Validation via API (GPT-4o-mini)"
+  },
+  "dataset": {
+    "dataset_name": "cure_bench_pharse_1",
+    "dataset_path": "/home/zhenfeng/AAI/CUREBench/data/curebench_valset_pharse1.jsonl",
+    "description": "CureBench Phase 1 Validation Set"
+  }
+}

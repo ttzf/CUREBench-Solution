@@ -1,3 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Data
+data/
+*.jsonl
+*.csv
+*.zip
+
+# Results
+results*/
+competition_test_results*/
+output/
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
 node_modules
 /dist
-.env

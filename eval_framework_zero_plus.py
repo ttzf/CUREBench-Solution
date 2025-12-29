@@ -828,52 +828,20 @@ Output Schema:
 }
 """
         
-        # Few-Shot Examples for Medical Reasoning (Enhanced with Self-Reflection)
-        few_shot_examples_mc = """
-Example 1:
-Question: A 65-year-old man with chronic kidney disease (stage 4) and type 2 diabetes presents with hypertension (160/90 mmHg). He is currently on amlodipine. Which of the following is the most appropriate next step in management to protect renal function?
-Options:
-A. Add lisinopril
-B. Increase amlodipine dose
-C. Add hydrochlorothiazide
-D. Switch to nifedipine
-
-Response:
-{
-    "reasoning": "1. Patient Analysis: 65M, CKD stage 4 (eGFR 15-29), T2DM, HTN. Goal: Control BP AND slow CKD progression (renoprotection). 2. Mechanism: Diabetic nephropathy involves glomerular hyperfiltration. RAAS blockade reduces intraglomerular pressure. 3. Evaluate Options: A (Add lisinopril): ACE inhibitors are first-line for HTN in CKD/DM due to proven renoprotective effects (reducing proteinuria). B (Increase amlodipine): Lowers BP but no specific renoprotection; higher dose risks edema. C (Add hydrochlorothiazide): Thiazides lose efficacy when GFR < 30 ml/min (Stage 4); loop diuretics are preferred for volume control here. D (Switch to nifedipine): Another CCB, no added benefit over amlodipine. 4. Verification: Check for hyperkalemia risk with ACEi in Stage 4 CKD, but it is the indicated *next step* with monitoring. Correct.",
-    "choice": "A",
-    "prediction": "Add lisinopril"
-}
-
-Example 2:
-Question: Which of the following drugs is an anti-CD20 monoclonal antibody used in the treatment of diffuse large B-cell lymphoma?
-Options:
-A. Trastuzumab
-B. Rituximab
-C. Bevacizumab
-D. Cetuximab
-
-Response:
-{
-    "reasoning": "1. Identify Target: Anti-CD20 monoclonal antibody. 2. Indication: Diffuse large B-cell lymphoma (DLBCL). 3. Evaluate Options: A (Trastuzumab): Anti-HER2 (Breast/Gastric cancer). Incorrect. B (Rituximab): Chimeric anti-CD20 IgG1. Standard of care (R-CHOP) for DLBCL. Correct. C (Bevacizumab): Anti-VEGF-A (Colorectal/Lung/Glioblastoma). Incorrect. D (Cetuximab): Anti-EGFR (Colorectal/Head & Neck). Incorrect. 4. Final Check: Rituximab binds CD20 on B-cells -> ADCC/CDC -> B-cell depletion. Matches description perfectly.",
-    "choice": "B",
-    "prediction": "Rituximab"
-}
-"""
-
-        # Format prompt with structured instructions
+        # Zero-Shot+ Prompt (Optimized based on 146 error analysis)
         if question_type == "multi_choice":
             prompt = f"""You are a world-class medical expert taking a high-stakes board certification exam.
 Question Type: Multiple Choice
 
 Instructions:
-1. **Analyze**: Break down the patient's profile (age, history, symptoms) and the core clinical question.
-2. **Eliminate**: Systematically disprove incorrect options using medical guidelines and pharmacological mechanisms.
-3. **Justify**: Provide strong evidence for the correct option.
-4. **Reflect**: Before finalizing, ask yourself: "Is there any contraindication I missed? Is this the *best* answer or just a *possible* one?"
-5. Output strictly in the requested JSON format.
-
-{few_shot_examples_mc}
+1. **Analyze Constraints**: Identify key qualifiers (e.g., "SEVERE", "NOT", "INITIAL", "GOLD STANDARD").
+2. **Recall Protocol & Data**: 
+   - For drug questions, refer strictly to FDA labeling and official guidelines.
+   - For clinical trial questions, recall specific percentages and dosage data if applicable.
+3. **Evaluate Options**:
+   - Differentiate between similar options based on severity or stage.
+   - For "NOT" questions, ensure the selected option is clearly excluded.
+4. **Final Selection**: Choose the single best answer.
 
 Question: {question}
 
@@ -887,9 +855,10 @@ Output Schema:
 Question Type: Open-Ended converted to Multiple Choice
 
 Instructions:
-1. Provide a comprehensive, high-precision answer to the medical question.
-2. Focus on specific drug names, mechanisms, or guidelines.
-3. Output your response in strictly valid JSON format.
+1. **Analyze**: Identify the specific drug, condition, and clinical context. Pay attention to severity (e.g. "Severe reaction").
+2. **Retrieve**: Recall official guidelines, adverse event protocols, and contraindications.
+3. **Precision**: Be specific with dosages, percentages, and timeframes. Your answer will be compared against specific options later.
+4. **Synthesize**: Provide a precise, protocol-based answer. Avoid vague generalities.
 
 Question: {question}
 
@@ -897,13 +866,13 @@ Output Schema:
 {open_ended_schema}
 """
         elif question_type == "open_ended":
-            prompt = f"""You are a world-class medical expert providing a specialized consultation.
+            prompt = f"""You are a world-class medical expert providing a formal consultation.
 Question Type: Open-Ended
 
 Instructions:
-1. Analyze the clinical inquiry deeply.
-2. Provide a structured, evidence-based response citing relevant guidelines or mechanisms.
-3. Output your response in strictly valid JSON format.
+1. **Analyze**: Identify the specific drug, condition, and clinical context.
+2. **Retrieve**: Recall official guidelines, adverse event protocols, and contraindications.
+3. **Synthesize**: Provide a precise, protocol-based answer. Avoid vague generalities.
 
 Question: {question}
 

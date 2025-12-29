@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Bio-Medical AI Competition - Evaluation Script
+Bio-Medical AI Competition - Evaluation Script (Zero-Shot)
 
 Simple evaluation script that supports metadata configuration
 via command line arguments and configuration files.
 
 Usage:
     # Basic usage
-    python run.py                                      # Run with defaults
+    python run_zero.py                                      # Run with defaults
     
     # With metadata via config file
-    python run.py --config metadata_config.json
+    python run_zero.py --config metadata_config.json
 """
 
 import os
-from eval_framework import CompetitionKit, load_and_merge_config, create_metadata_parser
+# Import from the Zero-Shot framework
+from eval_framework_zero import CompetitionKit, load_and_merge_config, create_metadata_parser
 
 
 def main():
@@ -31,14 +32,14 @@ def main():
     args = load_and_merge_config(args)
     
     # Extract values dynamically with fallback defaults
-    output_file = getattr(args, 'output_file', "submission.csv") 
+    output_file = getattr(args, 'output_file', "submission_zero.csv") 
     dataset_name = getattr(args, 'dataset')
     model_name = getattr(args, 'model_path', None) or getattr(args, 'model_name', None)
     model_class = getattr(args, 'model_class', 'auto')
     
     """Run evaluation with metadata support"""
     print("\n" + "="*60)
-    print("🏥 CURE-Bench Competition - Evaluation")
+    print("🏥 CURE-Bench Competition - Evaluation (Zero-Shot)")
     print("="*60)
     
     # Initialize the competition kit
@@ -87,7 +88,6 @@ def main():
     for key, value in final_metadata.items():
         print(f"  {key}: {value}")
             
-
 
 if __name__ == "__main__":
     main()

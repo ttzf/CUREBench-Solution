@@ -10,7 +10,7 @@
   },
   "dataset": {
     "dataset_name": "cure_bench_pharse_1",
-    "dataset_path": "path/to/curebench_valset.jsonl",
+    "dataset_path": "/home/zhenfeng/AAI/CUREBench/data/curebench_valset_pharse1.jsonl",
     "description": "CureBench 2025 val questions"
   }
 }

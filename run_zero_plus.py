@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Bio-Medical AI Competition - Evaluation Script
+Bio-Medical AI Competition - Evaluation Script (Zero-Shot Plus)
 
 Simple evaluation script that supports metadata configuration
 via command line arguments and configuration files.
 
 Usage:
     # Basic usage
-    python run.py                                      # Run with defaults
+    python run_zero_plus.py                                      # Run with defaults
     
     # With metadata via config file
-    python run.py --config metadata_config.json
+    python run_zero_plus.py --config metadata_config.json
 """
 
 import os
-from eval_framework import CompetitionKit, load_and_merge_config, create_metadata_parser
+# Import from the Zero-Shot Plus framework
+from eval_framework_zero_plus import CompetitionKit, load_and_merge_config, create_metadata_parser
 
 
 def main():
@@ -38,7 +39,7 @@ def main():
     
     """Run evaluation with metadata support"""
     print("\n" + "="*60)
-    print("🏥 CURE-Bench Competition - Evaluation")
+    print("🏥 CURE-Bench Competition - Evaluation (Zero-Shot Plus)")
     print("="*60)
     
     # Initialize the competition kit
@@ -50,6 +51,10 @@ def main():
             config_path = default_config
     
     kit = CompetitionKit(config_path=config_path)
+    
+    # Force output directory to results_zero_plus
+    kit.output_dir = "results_zero_plus"
+    os.makedirs(kit.output_dir, exist_ok=True)
     
     print(f"Loading model: {model_name}")
     kit.load_model(model_name, model_class)
@@ -87,7 +92,6 @@ def main():
     for key, value in final_metadata.items():
         print(f"  {key}: {value}")
             
-
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "model_name": "gpt-5-mini",
+    "model_type": "chatgpt",
+    "track": "internal_reasoning",
+    "base_model_type": "API",
+    "base_model_name": "gpt-5-mini",
+    "dataset": "cure_bench_phase_2",
+    "additional_info": "Phase 2 Submission via API (GPT-5-mini + Few-Shot)"
+  },
+  "dataset": {
+    "dataset_name": "cure_bench_phase_2",
+    "dataset_path": "/home/zhenfeng/AAI/CUREBench/data/curebench_testset_phase2.jsonl",
+    "description": "CureBench Phase 2 Test Set"
+  }
+}
